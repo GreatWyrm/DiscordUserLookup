@@ -70,17 +70,11 @@ fn lookup_username_with_cache(
     let cache_lookup = cached_list.lookup_user(user_id);
 
     match cache_lookup {
-        Some(name) => {
-            println!("Hit cache for {}", name);
-            return Ok(name);
-        }
+        Some(name) => Ok(name),
         None => {
             let lookup_result = lookup_user(bot_token, user_id);
             match lookup_result {
-                Ok(user) => {
-                    println!("Made API call for {}", &user.username);
-                    return Ok(user.username);
-                }
+                Ok(user) => Ok(user.username),
                 Err(e) => Err(e),
             }
         }
