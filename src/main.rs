@@ -74,7 +74,10 @@ fn lookup_username_with_cache(
         None => {
             let lookup_result = lookup_user(bot_token, user_id);
             match lookup_result {
-                Ok(user) => Ok(user.username),
+                Ok(user) => {
+                    cached_list.save_to_cache(user_id, &user.username);
+                    return Ok(user.username);
+                },
                 Err(e) => Err(e),
             }
         }
@@ -146,7 +149,6 @@ fn parse_file(cached_list: &mut CachedUserList, bot_token: &str, file_name: Stri
                             match result {
                                 Ok(username) => {
                                     usernames.insert(username.clone());
-                                    cached_list.save_to_cache(value, &username);
                                 }
                                 Err(e) => println!("Failed to retrieve user: {}", e),
                             }
