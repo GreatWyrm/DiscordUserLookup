@@ -4,6 +4,9 @@ use reqwest::blocking::Client;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
 
+mod cache;
+use crate::cache::CachedUserList;
+
 // See https://docs.discord.com/developers/resources/user#user-resource
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -58,6 +61,33 @@ impl DiscordUser {
     }
 }
 
+// Looks up the username first in the cache list, and if not, contacts the API and saves the result
+fn lookup_username_with_cache(
+    cached_list: &mut CachedUserList,
+    bot_token: &str,
+    user_id: u64,
+) -> Result<String, reqwest::Error> {
+    let cache_lookup = cached_list.lookup_user(user_id);
+
+    match cache_lookup {
+        Some(name) => {
+            println!("Hit cache for {}", name);
+            return Ok(name);
+        }
+        None => {
+            let lookup_result = lookup_user(bot_token, user_id);
+            match lookup_result {
+                Ok(user) => {
+                    println!("Made API call for {}", &user.username);
+                    return Ok(user.username);
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+// Always calls the API
 fn lookup_user(bot_token: &str, user_id: u64) -> Result<DiscordUser, reqwest::Error> {
     // Create sensitive header value
     let mut auth_value = HeaderValue::from_str(format!("Bot {}", bot_token).as_str()).unwrap();
@@ -71,7 +101,7 @@ fn lookup_user(bot_token: &str, user_id: u64) -> Result<DiscordUser, reqwest::Er
     let response = request.send();
 
     match response {
-        Ok(result) =>  result.json::<DiscordUser>(),
+        Ok(result) => result.json::<DiscordUser>(),
         Err(err) => Err(err),
     }
 }
@@ -100,10 +130,9 @@ fn parse_cli_ids(bot_token: &str, input: Vec<&String>) -> () {
     }
 }
 
-fn parse_file(bot_token: &str, file_name: String) -> () {
+fn parse_file(cached_list: &mut CachedUserList, bot_token: &str, file_name: String) -> () {
     let file_contents_result = std::fs::read_to_string(file_name);
     let mut usernames: HashSet<String> = HashSet::new();
-    let mut seen_ids: HashSet<u64> = HashSet::new();
     match file_contents_result {
         Ok(file_contents) => {
             let lines: Vec<&str> = file_contents.lines().collect();
@@ -119,15 +148,12 @@ fn parse_file(bot_token: &str, file_name: String) -> () {
                                 // Ids are a 19 digit number, discard anything below that
                                 continue;
                             }
-                            if seen_ids.contains(&value) {
-                                continue;
-                            }
-                            let result = lookup_user(&bot_token, value);
+                            let result = lookup_username_with_cache(cached_list, &bot_token, value);
                             match result {
-                                Ok(user) => {
-                                    usernames.insert(user.username);
-                                    seen_ids.insert(value);
-                                },
+                                Ok(username) => {
+                                    usernames.insert(username.clone());
+                                    cached_list.save_to_cache(value, &username);
+                                }
                                 Err(e) => println!("Failed to retrieve user: {}", e),
                             }
                         }
@@ -145,6 +171,7 @@ fn parse_file(bot_token: &str, file_name: String) -> () {
 }
 
 fn main() {
+    let mut cached_list: CachedUserList = CachedUserList::new();
     let no_token = "NO_TOKEN".to_string();
     // Get Bot Token from either env var or file
     let bot_token = match std::env::var("BOT_TOKEN") {
@@ -160,7 +187,7 @@ fn main() {
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args.len() > 2 {
         match cli_args[1].as_str() {
-            "--file" => parse_file(&bot_token, cli_args[2].clone()),
+            "--file" => parse_file(&mut cached_list, &bot_token, cli_args[2].clone()),
             "--lookup" => parse_cli_ids(&bot_token, cli_args.iter().skip(2).collect()),
             _ => println!("Unknown option {}", cli_args[1]),
         }
@@ -170,4 +197,5 @@ fn main() {
             cli_args.len()
         );
     }
+    cached_list.save_to_file();
 }
