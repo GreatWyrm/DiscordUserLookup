@@ -1,7 +1,8 @@
+use std::collections::HashSet;
+
 use reqwest::blocking::Client;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
-
 
 // See https://docs.discord.com/developers/resources/user#user-resource
 #[derive(Deserialize, Debug)]
@@ -38,7 +39,6 @@ enum PremiumType {
 #[allow(dead_code)]
 impl DiscordUser {
     pub fn get_id_as_u64(self) -> Option<u64> {
-
         match self.id.parse::<u64>() {
             Ok(value) => Some(value),
             Err(_e) => None,
@@ -47,42 +47,102 @@ impl DiscordUser {
 
     pub fn get_premium_type(self) -> Option<PremiumType> {
         match self.premium_type {
-            Some(value) => {
-                match value {
-                    1 => Some(PremiumType::NitroClassic),
-                    2 => Some(PremiumType::Nitro),
-                    3 => Some(PremiumType::NitroBasic),
-                    _ => Some(PremiumType::None),
-                }
+            Some(value) => match value {
+                1 => Some(PremiumType::NitroClassic),
+                2 => Some(PremiumType::Nitro),
+                3 => Some(PremiumType::NitroBasic),
+                _ => Some(PremiumType::None),
             },
             None => None,
         }
     }
 }
 
-fn lookup_user(bot_token: &str, user_id: u64) -> () {
+fn lookup_user(bot_token: &str, user_id: u64) -> Result<DiscordUser, reqwest::Error> {
     // Create sensitive header value
     let mut auth_value = HeaderValue::from_str(format!("Bot {}", bot_token).as_str()).unwrap();
     auth_value.set_sensitive(true);
 
     let client = Client::new();
-    let request = client.get(format!("https://discord.com/api/v9/users/{}", user_id))
+    let request = client
+        .get(format!("https://discord.com/api/v9/users/{}", user_id))
         .header(reqwest::header::AUTHORIZATION, auth_value);
 
-    let response = request.send().unwrap();
+    let response = request.send();
 
+    match response {
+        Ok(result) =>  result.json::<DiscordUser>(),
+        Err(err) => Err(err),
+    }
+}
 
-    match response.status() {
-        reqwest::StatusCode::OK => {
-            println!("Success!");
-        },
-        _ => println!("Unhandled Status Code {}", response.status()),
-    };
-    let retrieved_user = response.json::<DiscordUser>().unwrap();
-    println!("ID: {}, Username: {}, Global Username: {:?}", retrieved_user.id, retrieved_user.username, retrieved_user.global_name);
-    //println!("{}",response.text().unwrap());
-    //println!("{:?}", response.json::<DiscordUser>());
-} 
+fn parse_cli_ids(bot_token: &str, input: Vec<&String>) -> () {
+    for arg in input.iter() {
+        // Try parse to u64
+        let result = arg.parse::<u64>();
+        match result {
+            Ok(value) => {
+                let discord_user = lookup_user(&bot_token, value);
+                match discord_user {
+                    Ok(user) => println!(
+                        "ID: {}, Username: {}, Global Name: {:?}",
+                        user.id, user.username, user.global_name
+                    ),
+                    Err(e) => println!("Failed to retrieve user: {}", e),
+                }
+            }
+            Err(e) => {
+                println!("Failed to parse {} as a u64. {}", arg, e);
+            }
+        }
+        // Sleep to avoid API limits
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+}
+
+fn parse_file(bot_token: &str, file_name: String) -> () {
+    let file_contents_result = std::fs::read_to_string(file_name);
+    let mut usernames: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashSet<u64> = HashSet::new();
+    match file_contents_result {
+        Ok(file_contents) => {
+            let lines: Vec<&str> = file_contents.lines().collect();
+            // Delimiter is a ';', strangely enough
+            for line in lines {
+                let tokens = line.split(";");
+                for token in tokens {
+                    // Try parse as number
+                    let result = token.parse::<u64>();
+                    match result {
+                        Ok(value) => {
+                            if value < 10000000000000000 {
+                                // Ids are a 19 digit number, discard anything below that
+                                continue;
+                            }
+                            if seen_ids.contains(&value) {
+                                continue;
+                            }
+                            let result = lookup_user(&bot_token, value);
+                            match result {
+                                Ok(user) => {
+                                    usernames.insert(user.username);
+                                    seen_ids.insert(value);
+                                },
+                                Err(e) => println!("Failed to retrieve user: {}", e),
+                            }
+                        }
+                        Err(_e) => {}
+                    };
+                }
+            }
+        }
+        Err(e) => println!("Failed to read file, error: {}", e),
+    }
+
+    for username in usernames {
+        println!("{}", username);
+    }
+}
 
 fn main() {
     let no_token = "NO_TOKEN".to_string();
@@ -98,18 +158,16 @@ fn main() {
 
     // Parse command line arguments
     let cli_args: Vec<String> = std::env::args().collect();
-    for arg in cli_args.into_iter().skip(1) {
-        // Try parse to u64
-        let result = arg.parse::<u64>();
-        match result {
-            Ok(value) => {
-                lookup_user(&bot_token, value);
-            },
-            Err(e) => {
-                println!("Failed to parse {} as a u64. {}", arg, e);
-            },
+    if cli_args.len() > 2 {
+        match cli_args[1].as_str() {
+            "--file" => parse_file(&bot_token, cli_args[2].clone()),
+            "--lookup" => parse_cli_ids(&bot_token, cli_args.iter().skip(2).collect()),
+            _ => println!("Unknown option {}", cli_args[1]),
         }
-        // Sleep to avoid API limits
-        std::thread::sleep(std::time::Duration::from_millis(3));
+    } else {
+        println!(
+            "Requires more arguments (got {}, need more than 2)",
+            cli_args.len()
+        );
     }
 }
