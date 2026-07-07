@@ -4,8 +4,15 @@ use reqwest::blocking::Client;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
 
+use eframe::egui;
+
 mod cache;
+mod window;
 use crate::cache::CachedUserList;
+use crate::window::LookupApp;
+use std::path::PathBuf;
+
+pub static NO_BOT_TOKEN: &str = "NO_TOKEN";
 
 // See https://docs.discord.com/developers/resources/user#user-resource
 #[derive(Deserialize, Debug)]
@@ -77,7 +84,7 @@ fn lookup_username_with_cache(
                 Ok(user) => {
                     cached_list.save_to_cache(user_id, &user.username);
                     return Ok(user.username);
-                },
+                }
                 Err(e) => Err(e),
             }
         }
@@ -127,7 +134,11 @@ fn parse_cli_ids(bot_token: &str, input: Vec<&String>) -> () {
     }
 }
 
-fn parse_file(cached_list: &mut CachedUserList, bot_token: &str, file_name: String) -> () {
+pub fn parse_file(
+    cached_list: &mut CachedUserList,
+    bot_token: &str,
+    file_name: &PathBuf,
+) -> HashSet<String> {
     let file_contents_result = std::fs::read_to_string(file_name);
     let mut usernames: HashSet<String> = HashSet::new();
     match file_contents_result {
@@ -161,20 +172,17 @@ fn parse_file(cached_list: &mut CachedUserList, bot_token: &str, file_name: Stri
         Err(e) => println!("Failed to read file, error: {}", e),
     }
 
-    for username in usernames {
-        println!("{}", username);
-    }
+    usernames
 }
 
 fn main() {
     let mut cached_list: CachedUserList = CachedUserList::new();
-    let no_token = "NO_TOKEN".to_string();
     // Get Bot Token from either env var or file
     let bot_token = match std::env::var("BOT_TOKEN") {
         Ok(val) => val,
-        Err(_e) => std::fs::read_to_string("BOT_TOKEN.txt").unwrap_or(no_token.clone()),
+        Err(_e) => std::fs::read_to_string("BOT_TOKEN.txt").unwrap_or(NO_BOT_TOKEN.to_owned()),
     };
-    if bot_token == no_token {
+    if bot_token == NO_BOT_TOKEN {
         println!("Failed to find bot token!");
         return;
     }
@@ -183,14 +191,29 @@ fn main() {
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args.len() > 2 {
         match cli_args[1].as_str() {
-            "--file" => parse_file(&mut cached_list, &bot_token, cli_args[2].clone()),
+            "--file" => {
+                let result = parse_file(
+                    &mut cached_list,
+                    &bot_token,
+                    &PathBuf::from(cli_args[2].clone()),
+                );
+                for username in result {
+                    println!("{}", username);
+                }
+            }
             "--lookup" => parse_cli_ids(&bot_token, cli_args.iter().skip(2).collect()),
             _ => println!("Unknown option {}", cli_args[1]),
         }
     } else {
-        println!(
-            "Requires more arguments (got {}, need more than 2)",
-            cli_args.len()
+        // Launch window
+        let window_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1920.0, 1080.0]),
+            ..Default::default()
+        };
+        let _ = eframe::run_native(
+            "Discord User Lookup",
+            window_options,
+            Box::new(|_cc| Ok(Box::new(LookupApp::new(bot_token)))),
         );
     }
     cached_list.save_to_file();
